@@ -1,0 +1,245 @@
+#!/usr/bin/env bash
+# https://github.com/menduz/gpg-shell/gpg-shell
+
+# set -o errtrace
+# set -o nounset
+set -o pipefail
+
+# set -x # uncomment to debug
+umask 077
+
+gpg="$(command -v gpg || command -v gpg2)"
+gpgconf="${HOME}/.gnupg/gpg.conf"
+db_dir="${HOME}/.gpg-shell-db"
+recipients_group="gpg_shell_keygroup"
+
+fail () {
+  # Print an error message and exit.
+
+  tput setaf 1 1 1 ; printf "\n❌ Error: %s\n" "${1}" ; tput sgr0
+  exit 1
+}
+
+function __gpg_shell_setup_keygroup {
+  # Configure GPG keygroup setting.
+
+  gpg_shell_keygroup="group ${recipients_group} ="
+  keyid=""
+  recommend="$(${gpg} -K | grep "sec#" | \
+    awk -F "/" '{print $2}' | cut -c-18 | tr "\n" " ")"
+
+  printf "\n  Setting up GPG key group ...
+  Found key IDs: %s
+  Enter backup key IDs first, preferred key IDs last.
+  " "${recommend}"
+
+  while [[ -z "${keyid}" ]] ; do
+    echo "
+  Key ID or Enter to continue: "
+    read keyid
+    if [[ -z "${keyid}" ]] ; then
+      printf "%s\n" "$gpg_shell_keygroup" >> "${gpgconf}"
+      break
+    fi
+    gpg_shell_keygroup="${gpg_shell_keygroup} ${keyid}"
+    keyid=""
+  done
+}
+
+function __gpg_shell_edit {
+  TARGET_FILE="$1"
+
+  # Ensure our function gets called using a gpg file
+  if [ -z "$TARGET_FILE" ]; then
+    echo "ASSERT: MISSING TARGET_FILE ⚠️";
+    echo "usage: ";
+    echo "  gpg-shell-edit ./target_file.gpg ";
+    return 1
+  else
+    # Create a temp file to store our unencrypted .rc file
+    TMP_FILE=$(mktemp /tmp/log.XXXXXXXXXXXXXXXXXXXXXXXX)
+
+    # Ensure file deletion after we finish, whatever signal is raised
+    trap 'rm -f $TMP_FILE' 0 1 2 3 13 15
+
+    if ! echo 'test' | gpg --encrypt --armor --hidden-recipient "${recipients_group}"  --batch --yes --throw-keyids --output $(mktemp /tmp/log.XXXXXXXXXXXXXXXXXXXXXXXX) >> /dev/null; then
+      echo '⚠️ Encryption will fail. Please fix the errors above before continue.'
+    else
+      touch "$TARGET_FILE" || true
+
+      if [ ! -s "$TARGET_FILE" ]; then
+        echo "🔒 Generating empty file, touching the YubiKey and passphrase may be required to encrypt it."
+        echo "# blank bash environment" > "$TMP_FILE"
+
+        vi "$TMP_FILE"
+        echo '🔒 Encrypting file. Touching the YubiKey and passphrase may be required...'
+        gpg --hidden-recipient "${recipients_group}" --encrypt --armor --batch --yes --throw-keyids --output "$TARGET_FILE" "$TMP_FILE"
+      else
+        echo "🔓 Decrypting '$TARGET_FILE' touching the YubiKey and passphrase may be required."
+        if gpg --decrypt "$TARGET_FILE" >> "$TMP_FILE"; then
+
+          vi "$TMP_FILE"
+          echo "🔒 Encrypting file ${TARGET_FILE}..."
+          gpg --hidden-recipient "${recipients_group}" --encrypt --armor --batch --yes --throw-keyids --output "$TARGET_FILE" "$TMP_FILE"
+        else
+          fail "Failed to decrypt with gpg"
+          return 1
+        fi
+      fi
+    fi
+  fi
+}
+
+function __gpg_shell {
+  SECURE_FILE="$1"
+
+  if [ -z "$SECURE_FILE" ]; then
+    echo "ASSERT: MISSING SECURE_FILE";
+    echo "usage:";
+    echo "  gpg-shell secure_file.gpg";
+    return 1
+  else
+    # Create a temp file to store our unencrypted file
+    TMP_FILE=$(mktemp /tmp/log.XXXXXXXXXXXXXXXXXXXXXXXX)
+
+    # this trap makes the parent shell print a line and just in case delete the
+    # temporary file after it gets closed
+    trap "tput setaf 2 2 2 ; printf \"\n<<< Closing gpg-shell >>>\n\" ; tput sgr0; rm -f ${TMP_FILE}" 0 1 2 3 13 15
+
+    echo "🔓 Decrypting '$SECURE_FILE', touching the YubiKey and passphrase may be required."
+
+    # The first thing our TMP_FILE.rc will do is to delete itself.
+    { echo "#!/bin/zsh"
+      echo "rm -f '$TMP_FILE'"
+      echo 'echo ">>> 🕰 This shell will be closed after 5 minutes of inactivity. <<<"'
+    } >> "$TMP_FILE"
+
+    # Then we print the contents of the encrypted .rc file to our TMP_FILE
+    if gpg --batch --quiet --decrypt "$SECURE_FILE" >> "$TMP_FILE"; then
+      TMP_SAFE_SHELL=$(basename "$SECURE_FILE")
+      # Set an inactivity timeout
+      { echo 'TMOUT=300'
+        echo 'readonly TMOUT'
+        echo 'export TMOUT'
+        echo "export SAFE_SHELL=\"${TMP_SAFE_SHELL%.*}\""
+        # I have an `if` in the .zsh-theme that changes the colors
+        # in case of SAFE_SHELL and prints the name of the safe file
+        echo 'readonly SAFE_SHELL'
+        echo 'zsh -i -s'
+      } >> "$TMP_FILE"
+      tput setaf 2 2 2 ; printf "\n<<< Opening gpg-shell %s >>>\n" "${TMP_SAFE_SHELL%.*}" ; tput sgr0;
+      zsh -c "source $TMP_FILE"
+    else
+      fail "Error decrypting $SECURE_FILE"
+      return 1
+    fi
+  fi
+}
+
+# use FZF to list the available gpg shells
+function gpg-shell {
+  if [ -f "$1" ]; then
+    __gpg_shell $1
+  elif [ -f "$db_dir/$1" ]; then
+    __gpg_shell "$db_dir/$1"
+  elif [ -f "$db_dir/$1.gpg" ]; then
+    __gpg_shell "$db_dir/$1.gpg"
+  elif [ -f "$HOME/.fzf.zsh" ]; then
+    __gpg_shell "$db_dir/$(find $db_dir/*.gpg -type f -exec basename  {} \; | fzf --header 'Select a gpg-shell to open')"
+  elif [ -n "$1" ]; then
+    __gpg_shell $1
+  else
+    echo "⚠️ You must provide a name to open. Canceling"
+  fi
+}
+
+function gpg-shell-edit {
+  gpg_shell_keygroup=$(grep "group ${recipients_group}" "${gpgconf}" | sed 's/[^=]*= *//')
+  if [[ -z "${gpg_shell_keygroup}" ]] ; then
+    printf "\n Please set up a recipient group! You can modify this values later on the file: %s\n" "${gpgconf}"
+    __gpg_shell_setup_keygroup
+  fi
+
+  chmod -R 0700 "${db_dir}" 2>/dev/null
+
+  if [ -f "$1" ]; then
+    __gpg_shell_edit "$1"
+  elif [ -f "$db_dir/$1" ]; then
+    __gpg_shell_edit "$db_dir/$1"
+  elif [ -f "$db_dir/$1.gpg" ]; then
+    __gpg_shell_edit "$db_dir/$1.gpg"
+  elif [ -f "$HOME/.fzf.zsh" ]; then
+    __gpg_shell_edit "$db_dir/$(find $db_dir/*.gpg -type f -exec basename  {} \; | fzf  --header 'Select a gpg-shell to edit')"
+  elif [ -n "$1" ]; then
+    __gpg_shell_edit "$1"
+  else
+    echo "⚠️ You must provide a name to edit. Canceling"
+  fi
+
+  chmod -R 0400 "${db_dir}" 2>/dev/null
+}
+
+function gpg-shell-create {
+  filename=$(basename -- "$1")
+  __gpg_shell_edit "$db_dir/${filename%.*}.gpg"
+}
+
+function create-aliases {
+  # create aliases to start and edit secure shells
+  if [ -d "$db_dir" ]; then
+    for file in "$db_dir"/*.gpg; do
+      [ -e "$file" ] || continue
+      filename=$(basename -- "$file")
+      alias "env-${filename%.*}"="gpg-shell '${file}'"
+      alias "env-${filename%.*}-edit"="gpg-shell edit '${file}'"
+    done
+  fi
+}
+
+if [[ -z ${gpg} && ! -x ${gpg} ]] ; then fail "GnuPG is not available" ; fi
+if [[ ! -f ${gpgconf} ]] ; then fail "GnuPG config is not available (file $gpgconf)" ; fi
+if [[ ! -d ${db_dir} ]] ; then mkdir -p "${db_dir}" ; fi
+
+action=""
+if [[ -n "${1+x}" ]] ; then action="${1}" ; fi
+
+chmod -R 0400 "${db_dir}" 2>/dev/null
+
+if [[ "${action}" = "setup-keygroup" ]]; then
+  gpg_shell_keygroup=$(grep "group ${recipients_group}" "${gpgconf}" | sed 's/[^=]*= *//')
+
+  if [[ -z "${gpg_shell_keygroup}" ]] ; then
+    __gpg_shell_setup_keygroup
+  else
+    vi "${gpgconf}"
+  fi
+elif [[ "${action}" = "edit" ]]; then
+  # gpg-shell edit my-file.gpg
+  gpg-shell-edit "$2"
+elif [[ "${action}" = "create" ]]; then
+  # gpg-shell create work-staging
+  gpg-shell-create "$2"
+elif [[ "${action}" = "help" ]]; then
+  # print help
+  echo "
+    gpg-shell is a zsh shell script to manage environment variables with GnuPG asymmetric encryption. It is designed and recommended to be used with Yubikey as the secret key storage.
+
+    Example usage:
+      * Create new environment files
+        ./gpg-shell.sh create work-staging-env
+        ./gpg-shell.sh create personal-aws
+        ./gpg-shell.sh create npm-token
+
+      * Edit environment files
+        ./gpg-shell.sh edit work-staging-env
+        ./gpg-shell.sh edit personal-aws
+        ./gpg-shell.sh edit npm-token
+        ./gpg-shell.sh edit # for fzf picking
+
+      * Open shell
+        ./gpg-shell.sh work-staging-env
+        ./gpg-shell.sh # for fzf picking
+  "
+else
+  gpg-shell "$@"
+fi
