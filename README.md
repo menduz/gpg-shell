@@ -10,7 +10,9 @@
 # 1. Clone this repository with your dotfiles
   git submodule add https://github.com/menduz/gpg-shell
 
-# 2. Add the folder to your PATH in your .zshrc
+# 2. Link executable or add the folder to your PATH in your .zshrc
+  ln -sf "$(pwd)/gpg-shell/gpg-shell" "/usr/local/bin/gpg-shell"
+  # or
   echo "export PATH=\"$(pwd)/gpg-shell:\$PATH\"" >> "$HOME/.zshrc"
 
 # 3. Configure the folder to store your encrypted environments
