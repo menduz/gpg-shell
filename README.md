@@ -34,6 +34,20 @@ The recipient list is stored as a gpg group named `gpg_shell_keygroup` in the fi
 
 It is important to set the trust of all your recipient keys, otherwise you won't be able to encrypt anything for them.
 
+### Run shell with gpg environment
+
+```bash
+gpg-shell my-encrypted-env
+# opens an interactive zsh with all the environment variables of my-encrypted-env
+```
+
+### Run inline command with gpg environment
+
+```bash
+gpg-shell my-encrypted-env -- 'echo $MY_SECRET && exit 3'
+# an interactive zsh is open running the provided command, then exits with code 3
+```
+
 ### Step to step guide
 
 1. Create a environment configuration "work-dev" using `gpg-shell create work-dev`

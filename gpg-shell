@@ -125,8 +125,16 @@ function __gpg_shell {
         # I have an `if` in the .zsh-theme that changes the colors
         # in case of SAFE_SHELL and prints the name of the safe file
         echo 'readonly SAFE_SHELL'
-        echo 'zsh -i -s'
       } >> "$TMP_FILE"
+
+      if [ -z "${*:3}" ]; then
+        # start shell
+        echo 'zsh -i -s' >> "$TMP_FILE"
+      else
+        # run command
+        echo "zsh -i -c '${*:3}'" >> "$TMP_FILE"
+      fi
+
       tput setaf 2 2 2 ; printf "\n<<< Opening gpg-shell %s >>>\n" "${TMP_SAFE_SHELL%.*}" ; tput sgr0;
       zsh -c "source $TMP_FILE"
     else
@@ -139,15 +147,15 @@ function __gpg_shell {
 # use FZF to list the available gpg shells
 function gpg-shell {
   if [ -f "$1" ]; then
-    __gpg_shell $1
+    __gpg_shell "$1" "${@:2}"
   elif [ -f "$db_dir/$1" ]; then
-    __gpg_shell "$db_dir/$1"
+    __gpg_shell "$db_dir/$1" "${@:2}"
   elif [ -f "$db_dir/$1.gpg" ]; then
-    __gpg_shell "$db_dir/$1.gpg"
+    __gpg_shell "$db_dir/$1.gpg" "${@:2}"
   elif [ -f "$HOME/.fzf.zsh" ]; then
-    __gpg_shell "$db_dir/$(find $db_dir/*.gpg -type f -exec basename  {} \; | fzf --header 'Select a gpg-shell to open')"
+    __gpg_shell "$db_dir/$(find $db_dir/*.gpg -type f -exec basename  {} \; | fzf --header 'Select a gpg-shell to open')" "${@:2}"
   elif [ -n "$1" ]; then
-    __gpg_shell $1
+    __gpg_shell "$1" "${@:2}"
   else
     echo "⚠️ You must provide a name to open. Canceling"
   fi
@@ -216,6 +224,9 @@ if [[ "${action}" = "setup-keygroup" ]]; then
 elif [[ "${action}" = "edit" ]]; then
   # gpg-shell edit my-file.gpg
   gpg-shell-edit "$2"
+elif [[ "${3}" = "--" ]]; then
+  # gpg-shell run my-file.gpg
+  gpg-shell "${1}" -- "${@:3}"
 elif [[ "${action}" = "create" ]]; then
   # gpg-shell create work-staging
   gpg-shell-create "$2"
